@@ -1,0 +1,5 @@
+# Show mounted drives
+df -aTh
+
+# If packages have been "kept back", update them like this:
+sudo apt-get --with-new-pkgs upgrade
