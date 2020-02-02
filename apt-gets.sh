@@ -1,5 +1,45 @@
 #!/usr/bin/env bash
 
+### Steps before installing any packages
+# Where necessary, commands should be run from this folder.
+set -e
+
+# Define functions
+get_latest_release() {
+  # https://gist.githubusercontent.com/lukechilds/a83e1d7127b78fef38c2914c4ececc3c/raw/11d1a44b1b98b7ee1f7617db66b9510d94224ae1/get_latest_release.sh
+  curl --silent "https://api.github.com/repos/$1/releases/latest" | # Get latest release from GitHub api
+    grep '"tag_name":' |                                            # Get tag line
+    sed -E 's/.*"([^"]+)".*/\1/'                                    # Pluck JSON value
+}
+
+install_pyenv() {
+  curl https://pyenv.run | bash \
+          && exec $SHELL \
+          && pushd . \
+          && cd ${BASE_DIR} \
+          && pyenv install ${PYENV_PYTHON_VERSION} \
+          && popd
+}
+
+# Declare variables
+BASE_DIR="/tmp"
+CMAKE_VERSION=3.15.6
+PYENV_PYTHON_VERSION=3.7.6
+DOCKER_COMPOSE_VERSION=$(get_latest_release "docker/compose")
+POSTGRES_VERSION=12.1
+DOCKER_MACHINE_VERSION=$(get_latest_release "docker/machine")
+
+
+# Install pyenv and the desired Python version.
+# Then, set the local Python version of ${BASE_DIR} to the desired version
+# such that installing any other program will use ${PYENV_PYTHON_VERSION}.
+install_pyenv \
+    && pyenv install ${PYENV_PYTHON_VERSION} \
+	&& mkdir -p "${BASE_DIR}" \
+	&& cd ${BASE_DIR} \
+	&& pyenv local ${PYENV_PYTHON_VERSION}
+
+
 # Video player
 sudo apt-get update && sudo apt-get -y install ffmpeg
 
@@ -19,6 +59,12 @@ sudo apt-get update && sudo apt-get -y install tree
 
 sudo apt-get update && sudo apt-get install -y indicator-cpufreq
 
+# Alternative (better?) bluetooth
+sudo add-apt-repository ppa:bluetooth/bluez \
+        && sudo apt-get update \
+        && sudo apt-get install bluez \
+        && sudo cp default.pa /etc/pulse/default.pa
+
 # Gimp
 sudo apt-get update && sudo snap install gimp
 
@@ -35,7 +81,7 @@ sudo apt-get update \
 	&& sudo add-apt-repository \
 		"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
 	&& sudo apt-get update \
-    	&& sudo apt-get -y install \
+    && sudo apt-get -y install \
 		docker-ce \
 		docker-ce-cl \
 		containerd.io
@@ -50,13 +96,25 @@ sudo apt-get update \
 		make \
 	&& sudo curl \
 		-L \
-		"https://github.com/docker/compose/releases/download/1.25.0/docker-compose-$(uname -s)-$(uname -m)" \
+		"https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
 		-o /usr/local/bin/docker-compose \
 	&& sudo chmod +x /usr/local/bin/docker-compose \
 	&& docker-compose --version \
 	&& sudo curl \
-		-L https://raw.githubusercontent.com/docker/compose/1.25.0/contrib/completion/bash/docker-compose \
+		-L "https://raw.githubusercontent.com/docker/compose/${DOCKER_COMPOSE_VERSION}/contrib/completion/bash/docker-compose" \
 		-o /etc/bash_completion.d/docker-compose
+
+# Docker machine
+_DOCKER_MACHINE_URL=https://github.com/docker/machine/releases/download/${DOCKER_MACHINE_VERSION} \
+    && curl -L ${_DOCKER_MACHINE_URL}/docker-machine-$(uname -s)-$(uname -m) >/tmp/docker-machine \
+    && sudo mv /tmp/docker-machine /usr/local/bin/docker-machine \
+    && chmod +x /usr/local/bin/docker-machine
+
+# Docker post-install steps
+# https://docs.docker.com/install/linux/linux-postinstall/
+sudo groupadd docker \
+    && sudo usermod -aG docker ${USER} \
+    && newgrp docker
 
 # LLVM
 sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
@@ -72,10 +130,9 @@ sudo apt-get update \
 
 # PostgreSQL
 sudo apt-get install libxml2-dev \
-	&& curl -LO https://ftp.postgresql.org/pub/source/v12.1/postgresql-12.1.tar.gz \
-	&& tar xzf postgresql-12.1.tar.gz \
-	&& cd postgresql-12.1 \
-	&& pyenv local 3.7.6 \
+	&& curl -LO https://ftp.postgresql.org/pub/source/v${POSTGRES_VERSION}/postgresql-${POSTGRES_VERSION}.tar.gz \
+	&& tar xzf postgresql-${POSTGRES_VERSION}.tar.gz \
+	&& cd postgresql-${POSTGRES_VERSION} \
 	&& ./configure \
 		--enable-profiling \
 		--with-llvm \
@@ -141,6 +198,12 @@ sudo apt-get update \
 # JAVA
 sudo apt-get update && sudo apt-get -y install default-jdk
 
+# CMake
+_CMAKE_URL_BASE="https://github.com/Kitware/CMake/releases/download" \
+	pushd . \
+	&& cd ~/Downloads \
+	&& curl -LO "${_CMAKE_URL_BASE}/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}.tar.gz"
+
 # PROJ.4
 git clone --depth 1 --branch 6.3.0 https://github.com/OSGeo/PROJ.git \
 	&& cd PROJ \
@@ -186,12 +249,6 @@ sudo apt-get -y install libjson-c-dev \
 	&& make -j$(nproc) \
 	&& sudo make install
 
-# Alternative (better?) bluetooth
-sudo add-apt-repository ppa:bluetooth/bluez \
-	&& sudo apt-get update \
-	&& sudo apt-get install bluez \
-	&& sudo cp default.pa /etc/pulse/default.pa
-
 # sbt (Scala)
 # echo "deb https://dl.bintray.com/sbt/debian /" | \
 #                 sudo tee -a /etc/apt/sources.list.d/sbt.list \
@@ -207,5 +264,31 @@ sudo add-apt-repository ppa:bluetooth/bluez \
 # Zoom client
 curl -LO https://zoom.us/client/latest/zoom_amd64.deb \
 	&& sudo apt-get update \
-	&& sudo apt -y install ./zoom_amd64.deb \
+	&& sudo apt -y install ./zoom_amd64.deb
+
+###     QGIS     ###
+### Dependencies ###
+sudo apt-get update
+sudo apt-get -y install bison ca-certificates ccache cmake cmake-curses-gui dh-python doxygen expect flex flip gdal-bin git graphviz grass-dev libexiv2-dev libexpat1-dev libfcgi-dev libgdal-dev libgeos-dev libgsl-dev libpq-dev libproj-dev libqca-qt5-2-dev libqca-qt5-2-plugins libqscintilla2-qt5-dev libqt5opengl5-dev libqt5serialport5-dev libqt5sql5-sqlite libqt5svg5-dev libqt5webkit5-dev libqt5xmlpatterns5-dev libqwt-qt5-dev libspatialindex-dev libspatialite-dev libsqlite3-dev libsqlite3-mod-spatialite libyaml-tiny-perl libzip-dev lighttpd locales ninja-build ocl-icd-opencl-dev opencl-headers pkg-config poppler-utils pyqt5-dev pyqt5-dev-tools pyqt5.qsci-dev python3-all-dev python3-dateutil python3-dev python3-future python3-gdal python3-httplib2 python3-jinja2 python3-lxml python3-markupsafe python3-mock python3-nose2 python3-owslib python3-plotly python3-psycopg2 python3-pygments python3-pyproj python3-pyqt5 python3-pyqt5.qsci python3-pyqt5.qtsql python3-pyqt5.qtsvg python3-pyqt5.qtwebkit python3-requests python3-sip python3-sip-dev python3-six python3-termcolor python3-tz python3-yaml qt3d-assimpsceneimport-plugin qt3d-defaultgeometryloader-plugin qt3d-gltfsceneio-plugin qt3d-scene2d-plugin qt3d5-dev qt5-default qt5keychain-dev qtbase5-dev qtbase5-private-dev qtpositioning5-dev qttools5-dev qttools5-dev-tools saga spawn-fcgi txt2tags xauth xfonts-100dpi xfonts-75dpi xfonts-base xfonts-scalable xvfb
+
+mkdir -p ${HOME}/tmp \
+	&& cd ${HOME}/tmp \
+	&& git clone --branch ltr-3_10 --depth 1 --shallow-submodules https://github.com/qgis/QGIS.git \
+	&& cd QGIS \
+	&& mkdir build-master \
+	&& cd build-master \
+	&& cmake -D CMAKE_BUILD_TYPE=Release .. \
+	&& make -j$(nproc)
+
+cd ${HOME}/tmp/QGIS/build-master \
+	&& sudo make -j$(nproc) install \
+	&& cd ${HOME} \
+	&& rm -rf tmp
+
+echo "\n\n# Add directory containing QGIS libraries\nexport LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/lib" >> ${HOME}/.bashrc
+
+### Google Chrome
+cd Downloads \
+	&& curl -LO https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+	&& sudo dpkg -i google-chrome-stable_current_amd64.deb
 
