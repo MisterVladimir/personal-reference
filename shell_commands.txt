@@ -3,3 +3,7 @@ df -aTh
 
 # If packages have been "kept back", update them like this:
 sudo apt-get --with-new-pkgs upgrade
+
+
+# List open ports
+sudo lsof -i -P -n | grep LISTEN
