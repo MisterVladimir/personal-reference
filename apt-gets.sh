@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 
 ### Steps before installing any packages
-# Where necessary, commands should be run from this folder.
 set -e
+
+BASE_DIR="/tmp"
+TMP_DIR="/tmp"
+PYENV_PYTHON_VERSION=3.7.6
 
 # Define functions
 get_latest_release() {
@@ -10,6 +13,13 @@ get_latest_release() {
   curl --silent "https://api.github.com/repos/$1/releases/latest" | # Get latest release from GitHub api
     grep '"tag_name":' |                                            # Get tag line
     sed -E 's/.*"([^"]+)".*/\1/'                                    # Pluck JSON value
+}
+
+go_to_empty_tmp_dir() {
+	mkdir -p ${TMP_DIR} \
+		&& cd ${TMP_DIR} \
+		&& rm -rf ./* \
+		&& pyenv local ${PYENV_PYTHON_VERSION}
 }
 
 install_pyenv() {
@@ -22,13 +32,18 @@ install_pyenv() {
 }
 
 # Declare variables
-BASE_DIR="/tmp"
 CMAKE_VERSION=3.15.6
-PYENV_PYTHON_VERSION=3.7.6
 DOCKER_COMPOSE_VERSION=$(get_latest_release "docker/compose")
 POSTGRES_VERSION=12.1
+POSTGIS_VERSION=3.0.1
 DOCKER_MACHINE_VERSION=$(get_latest_release "docker/machine")
-
+CUDA_VERSION="10.2.89_440.33.01"
+ZSTD_VERSION=$(get_latest_release facebook/zstd)
+PROTOBUF_VERSION=$(get_latest_release protocolbuffers/protobuf)
+PROTOBUF_C_VERSION=$(get_latest_release protobuf-c/protobuf-c)
+GDAL_VERSION=$(get_latest_release osgeo/gdal)
+QGIS_VERSION="ltr-3_10"
+PROJ4_VERSION=$(get_latest_release osgeo/proj)
 
 # Install pyenv and the desired Python version.
 # Then, set the local Python version of ${BASE_DIR} to the desired version
@@ -36,7 +51,7 @@ DOCKER_MACHINE_VERSION=$(get_latest_release "docker/machine")
 install_pyenv \
     && pyenv install ${PYENV_PYTHON_VERSION} \
 	&& mkdir -p "${BASE_DIR}" \
-	&& cd ${BASE_DIR} \
+	&& cd ${BASE_DIR} \  # all subsequent installation steps will be executed from BASE_DIR
 	&& pyenv local ${PYENV_PYTHON_VERSION}
 
 
@@ -68,6 +83,7 @@ sudo add-apt-repository ppa:bluetooth/bluez \
 # Gimp
 sudo apt-get update && sudo snap install gimp
 
+### Docker ###
 # Docker
 sudo apt-get update \
 	&& sudo apt-get -y install \
@@ -116,9 +132,10 @@ sudo groupadd docker \
     && sudo usermod -aG docker ${USER} \
     && newgrp docker
 
-# LLVM
+### LLVM ###
 sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
 
+### PostgreSQL ###
 # PostgreSQL Documentation
 sudo apt-get update \
 	&& apt-get -y install \
@@ -129,10 +146,15 @@ sudo apt-get update \
 		xsltproc
 
 # PostgreSQL
-sudo apt-get install libxml2-dev \
-	&& curl -LO https://ftp.postgresql.org/pub/source/v${POSTGRES_VERSION}/postgresql-${POSTGRES_VERSION}.tar.gz \
-	&& tar xzf postgresql-${POSTGRES_VERSION}.tar.gz \
-	&& cd postgresql-${POSTGRES_VERSION} \
+pushd . \
+	&& sudo apt-get install libxml2-dev \
+	&& POSTGRES_TMP_DIR=postgresql \
+	&& curl \
+		-L \
+		-o ${POSTGRES_TMP_DIR}.tar.gz \
+		https://ftp.postgresql.org/pub/source/v${POSTGRES_VERSION}/postgresql-${POSTGRES_VERSION}.tar.gz \
+	&& tar xzf ${POSTGRES_TMP_DIR}.tar.gz \
+	&& cd ${POSTGRES_TMP_DIR} \
 	&& ./configure \
 		--enable-profiling \
 		--with-llvm \
@@ -143,15 +165,17 @@ sudo apt-get install libxml2-dev \
 	&& make -j$(nproc) \
 	&& sudo make install \
 	&& cd .. \
-	&& rm -rf postgresql-12.1 \
+	&& rm -rf ${POSTGRES_TMP_DIR} \
 	&& sudo apt-get -y install \
-		postgresql-client-12 \
+		postgresql-client-$(echo ${POSTGRES_VERSION} | cut -d"." -f1) \
 		libpq-dev \
-		postgresql-server-dev-12 \
-		pgadmin4
+		postgresql-server-dev-$(echo ${POSTGRES_VERSION} | cut -d"." -f1) \
+		pgadmin4 \
+	&& popd
 
-# Protobuf
-sudo apt-get update \
+### Protobuf ###
+pushd . \
+	&& sudo apt-get update \
 	&& sudo apt-get -y install \
 		autoconf \
 		automake \
@@ -162,7 +186,7 @@ sudo apt-get update \
 		unzip \
 	&& git clone \
 		--depth 1 \
-		--branch v3.11.2 \
+		--branch ${PROTOBUF_VERSION} \
 		--shallow-submodules \
 		https://github.com/google/protobuf.git \
 	&& cd protobuf \
@@ -172,82 +196,118 @@ sudo apt-get update \
 	&& make -j$(nproc) \
 	&& make -j$(nproc) check \
 	&& sudo make -j$(nproc) install \
-	&& sudo ldconfig
+	&& sudo ldconfig \
+	&& popd
 
 pushd . \
-git clone \
-	--depth 1 \
-	--branch v1.3.2 \
-	https://github.com/protobuf-c/protobuf-c.git \
-	/tmp/protobuf-c
+	&& PROTOBUF_C_TMP_DIR="protobuf-c" \
+	&& go_to_empty_tmp_dir \
+	&& git clone \
+		--depth 1 \
+		--branch ${PROTOBUF_C_VERSION} \
+		--shallow-submodules \
+		https://github.com/protobuf-c/protobuf-c.git \
+		${PROTOBUF_C_TMP_DIR} \
+	&& cd ${PROTOBUF_C_TMP_DIR} \
+	&& ./autogen.sh \
+	&& ./configure \
+	&& make -j$(nproc) \
+	&& sudo make install \
+	&& popd
 
-cd /tmp/protobuf-c \
-&& ./autogen.sh \
-&& ./configure \
-&& make -j$(nproc) \
-&& sudo make install \
-&& popd
-
-# HDF5
+### HDF5 ###
 sudo apt-get update && sudo apt-get -y install libhdf5-serial-dev
 
-# SQLite3
+### SQLite3
 sudo apt-get update \
 	&& sudo apt-get -y install sqlite3 libsqlite3-dev
 
-# JAVA
+### JAVA ###
 sudo apt-get update && sudo apt-get -y install default-jdk
 
-# CMake
+### CMake ##
 _CMAKE_URL_BASE="https://github.com/Kitware/CMake/releases/download" \
-	pushd . \
-	&& cd ~/Downloads \
-	&& curl -LO "${_CMAKE_URL_BASE}/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}.tar.gz"
+	&& pushd . \
+	&& CMAKE_TMP_DIR=cmake \
+	&& go_to_empty_tmp_dir \
+	&& curl -L \
+		-o ${CMAKE_TMP_DIR}.tar.gz \
+		"${_CMAKE_URL_BASE}/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}.tar.gz" \
+	&& tar ${CMAKE_TMP_DIR}.tar.gz \
+	&& cd ${CMAKE_TMP_DIR} \
+	&& ./bootstrap \
+		--sphinx-info \
+		--sphinx-man \
+		--sphinx-html \
+		-- \
+		-DCMAKE_BUILD_TYPE:STRING=Release \
+	&& make -j$(nproc) \
+	&& make install \
+	&& popd
 
-# PROJ.4
-git clone --depth 1 --branch 6.3.0 https://github.com/OSGeo/PROJ.git \
+### PROJ.4 ##
+pushd . \
+	&& go_to_empty_tmp_dir \
+	&& git clone --depth 1 --branch ${PROJ4_VERSION} https://github.com/OSGeo/PROJ.git \
 	&& cd PROJ \
-	&& git clone --depth 1 --branch https://github.com/OSGeo/proj-datumgrid.git data \
+	&& git clone --depth 1 https://github.com/OSGeo/proj-datumgrid.git data \
 	&& mkdir build \
 	&& cd build \
 	&& cmake .. \
 	&& cmake --build . \
 	&& make -j$(nproc) \
-	&& sudo make install
+	&& sudo make install \
+	&& popd
 
-# zstd
-curl -LO https://github.com/facebook/zstd/archive/v1.0.0.tar.gz \
-	&& cd /tmp \
-	&& tar xzf zstd-1.0.0.tar.gz \
-	&& cd zstd-1.0.0 \
-	&& make -j$(nproc) \
-	&& sudo make install
-
-# GDAL
-sudo apt-get update \
-	&& sudo apt-get -y install libgeos-dev \
-	&& export PKG_CONFIG_PATH=/usr/local/pgsql/lib/pkgconfig \
-	&& pyenv local 3.7.6 \
+### zstd ###
+pushd . \
+	&& ZSTD_TMP_DIR=zstd \
+	&& go_to_empty_tmp_dir \
 	&& curl \
 		-L \
-		-o /tmp/gdal-3.0.2.tar.gz \
-	       	https://github.com/OSGeo/gdal/releases/download/v3.0.2/gdal-3.0.2.tar.gz \
-	&& tar xzf gdal-3.0.2.tar.gz \
-	&& cd gdal-3.0.2.tar.gz \
+		-o ${ZSTD_TMP_DIR}.tar.gz \
+		https://github.com/facebook/zstd/archive/${ZSTD_VERSION}.tar.gz \
+	&& tar xzf ${ZSTD_TMP_DIR}.tar.gz \
+	&& cd ${ZSTD_TMP_DIR} \
+	&& make -j$(nproc) \
+	&& sudo make install \
+	&& popd
+
+### GDAL ###
+pushd . \
+	&& sudo apt-get update \
+	&& GDAL_TMP_DIR=gdal \
+	&& go_to_empty_tmp_dir \
+	&& sudo apt-get -y install libgeos-dev \
+	&& export PKG_CONFIG_PATH=/usr/local/pgsql/lib/pkgconfig \
+	&& curl \
+		-L \
+		-o ${GDAL_TMP_DIR}.tar.gz \
+		https://github.com/OSGeo/gdal/releases/download/${GDAL_VERSION}/gdal-$(echo $GDAL_VERSION | cut -dv -f2).tar.gz \
+	&& tar xzf ${GDAL_TMP_DIR}.tar.gz \
+	&& cd ${GDAL_TMP_DIR} \
 	&& ./autogen.sh \
 	&& ./configure --with-pg --with-hdf5 --with-geos \
-	&& make \
-	&& sudo make install
+	&& make -j$(nproc) \
+	&& sudo make install \
+	&& popd
 
-# PostGIS
-sudo apt-get -y install libjson-c-dev \
-	&& curl -LO https://download.osgeo.org/postgis/source/postgis-3.0.0.tar.gz \
-	&& tar xzf postgis-3.0.0.tar.gz \
-	&& cd postgis-3.0.0 \
+### PostGIS ###
+pushd . \
+	&& go_to_empty_tmp_dir \
+	&& POSTGIS_TMP_DIR=postgis \
+	&& sudo apt-get -y install libjson-c-dev \
+	&& curl \
+		-L \
+		-o ${POSTGIS_TMP_DIR}.tar.gz \
+		https://download.osgeo.org/postgis/source/postgis-${POSTGIS_VERSION}.tar.gz \
+	&& tar xzf ${POSTGIS_TMP_DIR}.tar.gz \
+	&& cd ${POSTGIS_TMP_DIR} \
 	&& ./autogen.sh \
 	&& ./configure \
 	&& make -j$(nproc) \
-	&& sudo make install
+	&& sudo make install \
+	&& popd
 
 # sbt (Scala)
 # echo "deb https://dl.bintray.com/sbt/debian /" | \
@@ -261,13 +321,14 @@ sudo apt-get -y install libjson-c-dev \
 # Haskel
 # sudo apt-get update && sudo apt-get -y install haskell-platform
 
-# Zoom client
+### Zoom client ###
 curl -LO https://zoom.us/client/latest/zoom_amd64.deb \
 	&& sudo apt-get update \
 	&& sudo apt -y install ./zoom_amd64.deb
 
 ###     QGIS     ###
 ### Dependencies ###
+########################## DOUBLE CHECK THE DEPENDENCIES ################################
 sudo apt-get update
 sudo apt-get -y install bison ca-certificates ccache cmake cmake-curses-gui dh-python doxygen expect flex flip gdal-bin git graphviz grass-dev libexiv2-dev libexpat1-dev libfcgi-dev libgdal-dev libgeos-dev libgsl-dev libpq-dev libproj-dev libqca-qt5-2-dev libqca-qt5-2-plugins libqscintilla2-qt5-dev libqt5opengl5-dev libqt5serialport5-dev libqt5sql5-sqlite libqt5svg5-dev libqt5webkit5-dev libqt5xmlpatterns5-dev libqwt-qt5-dev libspatialindex-dev libspatialite-dev libsqlite3-dev libsqlite3-mod-spatialite libyaml-tiny-perl libzip-dev lighttpd locales ninja-build ocl-icd-opencl-dev opencl-headers pkg-config poppler-utils pyqt5-dev pyqt5-dev-tools pyqt5.qsci-dev python3-all-dev python3-dateutil python3-dev python3-future python3-gdal python3-httplib2 python3-jinja2 python3-lxml python3-markupsafe python3-mock python3-nose2 python3-owslib python3-plotly python3-psycopg2 python3-pygments python3-pyproj python3-pyqt5 python3-pyqt5.qsci python3-pyqt5.qtsql python3-pyqt5.qtsvg python3-pyqt5.qtwebkit python3-requests python3-sip python3-sip-dev python3-six python3-termcolor python3-tz python3-yaml qt3d-assimpsceneimport-plugin qt3d-defaultgeometryloader-plugin qt3d-gltfsceneio-plugin qt3d-scene2d-plugin qt3d5-dev qt5-default qt5keychain-dev qtbase5-dev qtbase5-private-dev qtpositioning5-dev qttools5-dev qttools5-dev-tools saga spawn-fcgi txt2tags xauth xfonts-100dpi xfonts-75dpi xfonts-base xfonts-scalable xvfb
 
@@ -278,21 +339,20 @@ mkdir -p ${HOME}/tmp \
 	&& mkdir build-master \
 	&& cd build-master \
 	&& cmake -D CMAKE_BUILD_TYPE=Release .. \
-	&& make -j$(nproc)
-
-cd ${HOME}/tmp/QGIS/build-master \
+	&& make -j$(nproc) \
 	&& sudo make -j$(nproc) install \
 	&& cd ${HOME} \
 	&& rm -rf tmp
 
 echo "\n\n# Add directory containing QGIS libraries\nexport LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/lib" >> ${HOME}/.bashrc
 
+
 ### Google Chrome
 cd Downloads \
 	&& curl -LO https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
 	&& sudo dpkg -i google-chrome-stable_current_amd64.deb
 
-### Google Cloud SDK
+### Google Cloud SDK ###
 # Add the Cloud SDK distribution URI as a package source
 echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
 
@@ -301,3 +361,10 @@ curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyr
 
 # Update the package list and install the Cloud SDK
 sudo apt-get -y update && sudo apt-get -y install google-cloud-sdk
+
+### Recover Backups (Dependencies) ###
+# Note that the `backups` software comes installed on Ubuntu 18.04;
+# these packages are required only for recovery.
+sudo add-apt-repository -y ppa:duplicity-team/ppa \
+	&& sudo apt-get update \
+	&& sudo apt-get -y install duplicity python-gi
